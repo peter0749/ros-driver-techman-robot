@@ -16,6 +16,13 @@
 
 #include <ros/ros.h>
 #include "tm_driver/tm_driver.h"
+#include <gripper_test_node.h>
+
+bool isClose(const double a, const double b)
+{
+    if (abs(a-b) > 0.005) return false;
+    return true;
+}
 
 void getDI(TmDriver* robot, std::vector<bool>& vec) {
   robot->interface->stateRT->getDigitalInputEE(vec);
@@ -51,7 +58,6 @@ void closeGripper(TmDriver* robot) {
         print_info("Gripper is hold when closing.");
         break;
       }
-      print_info("Gripper is closing...");
       getDI(robot, vec);
     }
   } else {
@@ -84,7 +90,6 @@ void openGripper(TmDriver* robot) {
         print_info("Gripper is hold when opening.");
         break;
       }
-      print_info("Gripper is opening...");
       getDI(robot, vec);
     }
   } else {
@@ -170,6 +175,44 @@ void setOpenPosition(TmDriver* robot) {
  *   CHG2 close output <-> DI1
  *   CHG2 hold output <-> DI2
  */
+
+TMGripperInterface::TMGripperInterface(TmDriver* robot): node_handle_("") {
+
+    finger_l_joint_pub = node_handle_.advertise < std_msgs::Float64 > ("/finger_l_controller/command", 10);
+    finger_r_joint_pub = node_handle_.advertise < std_msgs::Float64 > ("/finger_r_controller/command", 10);
+
+    gripper_open_sub_ = node_handle_.subscribe("gripper/open", 10, & TMGripperInterface::gripperOpen, this);
+    gripper_close_sub_ = node_handle_.subscribe("gripper/close", 10, & TMGripperInterface::gripperClose, this);
+
+    gripper_state_pub = node_handle_.advertise<std_msgs::Int8>("gripper/state", 10);
+
+    gripper_state = -1; // unknown
+
+    this->robot = robot;
+
+}
+
+void TMGripperInterface::gripperClose(const std_msgs::Empty & mg) {
+    gripper_state = 1; // closing
+    closeGripper(robot);
+}
+
+void TMGripperInterface::gripperOpen(const std_msgs::Empty & mg) {
+    gripper_state = -1; // unknown
+    openGripper(robot);
+}
+
+void TMGripperInterface::gripperStateCallback(const ros::TimerEvent &) {
+    std_msgs::Int8 gripper_state_msg;
+    gripper_state_msg.data = gripper_state;
+    gripper_state_pub.publish(gripper_state_msg);
+}
+
+void TMGripperInterface::recordArmJoints(const sensor_msgs::JointState::ConstPtr & msg) {
+    for (int index = 0; index < NUMBER_OF_ARM_JOINTS; ++index)
+        arm_state[index] = msg->position.at(index);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "gripper test");
   ros::NodeHandle nh;
@@ -188,34 +231,29 @@ int main(int argc, char** argv) {
   ros::Rate loop_rate(10);
 
   print_info("Connecting to the robot...");
+
   TmDriver* robot = new TmDriver(data_cv, data_cv_rt, host, 0);
+
   bool isRobotStarted = robot->interface->start();
 
   if (!isRobotStarted) {
-    print_info("Can't connect to TM robot: %s", host.c_str());
-    return 0;
+      print_info("Can't connect to TM robot: %s", host.c_str());
+      return 0;
   }
   print_info("TM5_700 gripper test");
-  char cstr[512];
+
+  TMGripperInterface *gripper_interface = new TMGripperInterface(robot);
 
   while (ros::ok()) {
-
-    print_info("command:");
-    memset(cstr, 0, 512);
-    fgets(cstr, 512, stdin);
-
-    if (strncmp(cstr, "close", 4) == 0) {
-      closeGripper(robot);
-    } else if (strncmp(cstr, "open", 4) == 0) {
-      openGripper(robot);
-    } else if (strncmp(cstr, "quit", 4) == 0) {
-      return 0;
-    } else {
-      print_info("unknown command: %s", cstr);
-    }
-    
     ros::spinOnce();
     loop_rate.sleep();
   }
+
+  delete robot;
+  robot = NULL;
+  
+  delete gripper_interface;
+  gripper_interface = NULL;
+
   return 0;
 }
